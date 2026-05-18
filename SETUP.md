@@ -1,9 +1,8 @@
-# ComputeFarm Setup
+# ComputeFarm Queue Setup
 
-This checkout is already extracted. The Celery framework lives under
-`orchestrator/`, and the Pi/Ray head-node bundle lives under `worker/`.
-
-For the standard Celery GeoStudio workflow, start in `orchestrator/`.
+This file covers the generic queue workflow under `orchestrator/`. Software-
+specific notes, including the bundled GeoStudio example, live in separate
+guides such as [GEOSTUDIO.md](GEOSTUDIO.md).
 
 ## Orchestrator Layout
 
@@ -27,9 +26,8 @@ orchestrator/
 |   |-- tasks.py
 |   `-- requirements.txt
 `-- tools/
-    |-- solve_gsz_geocmd.ps1
-    |-- solve_gsz.ps1
-    `-- geostudio_automation/scripts/solve_and_extract.py
+    |-- <software-runner>.ps1
+    `-- ...
 ```
 
 Runtime folders such as `raw/`, `solved/`, `logs/`, and `manifests/` are
@@ -37,23 +35,23 @@ created by setup or by the running workflow.
 
 ## First-Time Setup
 
+Run the repository-level configuration script first:
+
+```powershell
+cd E:\Github\computerfarm
+.\configure.ps1
+```
+
 On the Windows storage hub:
 
 ```powershell
 cd E:\Github\computerfarm\orchestrator\framework
-notepad config.yaml
 .\setup.bat
 .\setup_check.bat
 ```
 
-In `config.yaml`, set the Redis host, shared paths, concurrency, and solver
-script for your deployment. The default fast GeoStudio solver is:
-
-```yaml
-solve_script: "solve_gsz_geocmd.ps1"
-```
-
-That script is located at `orchestrator/tools/solve_gsz_geocmd.ps1`.
+`configure.ps1` sets the Redis host, storage share details, worker
+concurrency, and the selected script from `orchestrator/tools/`.
 
 ## Worker PCs
 
@@ -77,15 +75,24 @@ If you instead shared the repository root, use `Z:\orchestrator\framework`.
 ## Job Flow
 
 ```text
-raw/*.gsz
+raw/<input files>
   -> copied to worker local scratch
-  -> solved by orchestrator/tools/<solve_script>
+  -> processed by orchestrator/tools/<configured-script>
   -> copied back to solved/
   -> logs written under logs/<job_id>/
 ```
 
-No parquet or CSV outputs are required for the queue workflow. The solved
-`.gsz` file is the primary output.
+The configured script is selected in:
+
+```text
+orchestrator/framework/config.yaml
+```
+
+or with:
+
+```powershell
+.\configure.ps1 -SolveScript <software-runner>.ps1
+```
 
 ## Submitting Jobs
 
@@ -93,6 +100,7 @@ From the storage hub:
 
 ```powershell
 cd E:\Github\computerfarm\orchestrator
+.\make_manifest.bat
 .\submit.bat
 ```
 
@@ -100,9 +108,9 @@ Useful commands:
 
 | Action | Command |
 | --- | --- |
-| Submit all raw jobs | `submit.bat` |
-| Resubmit missing solved files only | `resubmit.bat` |
 | Generate manifest only | `make_manifest.bat` |
+| Submit jobs | `submit.bat` |
+| Resubmit missing outputs only | `resubmit.bat` |
 | Purge queued jobs | `purge_queue.bat` |
 | Restart workers | `restart_all_workers.bat` |
 | Stop workers | `stop_all_workers.bat` |
@@ -116,18 +124,15 @@ python generate_manifest.py ..\raw -o ..\manifests\batch.yaml
 python submit_manifest.py ..\manifests\batch.yaml
 ```
 
+The bundled manifest helpers currently scan the top level of `raw/` for the
+extension configured in their source. For a different file extension, update
+`generate_manifest.py` and `_resubmit_helper.py`, or prepare manifest YAML
+files manually.
+
 ## Retry Policy
 
-A `.gsz` that fails to solve is automatically requeued for another attempt, up
-to 6 attempts total, with 5 minutes between attempts.
-
-Worker crashes mid-solve are handled separately by Celery message redelivery
-and do not count against the retry budget.
-
-After the final failed attempt, a `<stem>_PARTIAL.gsz` file is written to
-`solved/` as a forensic record, and logs remain under `logs/<job_id>/`.
-
-The retry constants are in:
+A processing failure is automatically requeued for another attempt, up to the
+retry limit in:
 
 ```text
 orchestrator/framework/tasks.py
@@ -139,6 +144,13 @@ Look for:
 SOLVE_MAX_ATTEMPTS
 SOLVE_RETRY_DELAY_SEC
 ```
+
+Worker crashes mid-run are handled separately by Celery message redelivery and
+do not count against the processing retry budget.
+
+After the final failed attempt, the worker may write a partial forensic copy
+to `solved/`, depending on the task implementation and whether a local output
+file exists.
 
 ## Path Detection
 
@@ -152,7 +164,6 @@ raw_dir:        Z:\orchestrator\raw
 solved_dir:     Z:\orchestrator\solved
 logs_dir:       Z:\orchestrator\logs
 tools_dir:      Z:\orchestrator\tools
-solve_script:   Z:\orchestrator\tools\solve_gsz_geocmd.ps1
 ```
 
 If the storage hub shares `orchestrator/` directly, the same layout appears on
@@ -165,7 +176,6 @@ raw_dir:        Z:\raw
 solved_dir:     Z:\solved
 logs_dir:       Z:\logs
 tools_dir:      Z:\tools
-solve_script:   Z:\tools\solve_gsz_geocmd.ps1
 ```
 
 Local scratch storage is selected separately by the worker code, typically
