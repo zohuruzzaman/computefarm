@@ -9,7 +9,7 @@ solver path.
 GeoStudio scripts live in:
 
 ```text
-orchestrator/tools/
+worker/tools/
 ```
 
 | Script | Purpose |
@@ -33,7 +33,7 @@ You can set that with:
 or by editing:
 
 ```text
-orchestrator/framework/config.yaml
+worker/framework/config.yaml
 ```
 
 ## Input Files
@@ -41,20 +41,20 @@ orchestrator/framework/config.yaml
 The current manifest and resubmit helpers scan only the top level of `raw/`:
 
 ```text
-orchestrator/raw/*.gsz
+worker/raw/*.gsz
 ```
 
 Keep `.gsz` files directly in `raw/`:
 
 ```text
-orchestrator/raw/model_001.gsz
-orchestrator/raw/model_002.gsz
+worker/raw/model_001.gsz
+worker/raw/model_002.gsz
 ```
 
 Nested folders are not discovered by the current helpers:
 
 ```text
-orchestrator/raw/project_a/model_001.gsz
+worker/raw/project_a/model_001.gsz
 ```
 
 The worker also writes solved files flat into `solved/`, using only the input
@@ -65,13 +65,13 @@ filename. Avoid duplicate filenames across a batch.
 On the Windows storage hub:
 
 ```powershell
-cd E:\Github\computerfarm\orchestrator\framework
+cd E:\Github\computerfarm\worker\framework
 .\setup.bat
 .\setup_check.bat
 ```
 
 When `setup.bat` asks whether to share the folder, choose `y` if workers will
-mount the orchestrator folder over SMB.
+mount the worker folder over SMB.
 
 The share created by the script is:
 
@@ -122,13 +122,13 @@ setx GEOCMD_EXE "C:\Path\To\GeoCmd.exe"
 Put input files in:
 
 ```text
-orchestrator/raw/
+worker/raw/
 ```
 
 Then run from the storage hub:
 
 ```powershell
-cd E:\Github\computerfarm\orchestrator
+cd E:\Github\computerfarm\worker
 .\make_manifest.bat
 .\submit.bat
 ```
@@ -144,13 +144,13 @@ To submit only files that do not already have a solved twin:
 Solved files are written to:
 
 ```text
-orchestrator/solved/
+worker/solved/
 ```
 
 Per-job logs are written to:
 
 ```text
-orchestrator/logs/<job_id>/
+worker/logs/<job_id>/
 ```
 
 Typical files include:
@@ -164,7 +164,7 @@ stderr.attempt1.log
 If a job fails all retry attempts, the worker writes a forensic copy:
 
 ```text
-orchestrator/solved/<stem>_PARTIAL.gsz
+worker/solved/<stem>_PARTIAL.gsz
 ```
 
 ## Retry Policy

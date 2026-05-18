@@ -14,8 +14,8 @@ or unzip step in this checkout.
 - Flower and a small control panel for monitoring and session management.
 - Windows worker launchers with local scratch directories, retry handling,
   logs, and restart/stop controls.
-- A configurable `orchestrator/tools/` folder where each software package gets
-  its own run script.
+- A configurable `worker/tools/` folder where each software package gets its
+  own run script.
 
 The bundled example is GeoStudio, documented separately in [GEOSTUDIO.md](GEOSTUDIO.md).
 
@@ -27,7 +27,7 @@ computerfarm/
 |-- SETUP.md
 |-- GEOSTUDIO.md
 |-- configure.ps1
-|-- orchestrator/
+|-- worker/
 |   |-- connect_drive.ps1
 |   |-- submit.bat
 |   |-- resubmit.bat
@@ -38,7 +38,7 @@ computerfarm/
 |   |-- make_manifest.bat
 |   |-- framework/
 |   `-- tools/
-`-- worker/
+`-- orchestrator/
     |-- README.md
     `-- computefarm/
 ```
@@ -60,8 +60,8 @@ updates:
 
 | File | What gets patched |
 | --- | --- |
-| `orchestrator/framework/config.yaml` | Redis host/auth, concurrency, solver script |
-| `orchestrator/connect_drive.ps1` | Storage hostname/IP and share name |
+| `worker/framework/config.yaml` | Redis host/auth, concurrency, solver script |
+| `worker/connect_drive.ps1` | Storage hostname/IP and share name |
 
 Non-interactive example:
 
@@ -84,10 +84,10 @@ Redis broker + Flower/control panel
   Runs on the Raspberry Pi, Linux host, or any always-on machine
 
 Windows storage hub
-  Shared orchestrator folder with raw inputs, outputs, logs, and manifests
+  Shared worker folder with raw inputs, outputs, logs, and manifests
 
 Windows worker PCs
-  Run Celery workers from orchestrator/framework
+  Run Celery workers from worker/framework
 ```
 
 The active execution path is:
@@ -98,55 +98,55 @@ raw/
   -> submit.bat
   -> Redis/Celery
   -> Windows Celery workers
-  -> orchestrator/tools/<configured-script>.ps1
+  -> worker/tools/<configured-script>.ps1
   -> solved/
 ```
 
 ## Queue Workflow
 
 1. Put input files in the configured `raw/` folder.
-2. Generate a manifest with `orchestrator/make_manifest.bat`.
-3. Submit the manifest with `orchestrator/submit.bat`.
+2. Generate a manifest with `worker/make_manifest.bat`.
+3. Submit the manifest with `worker/submit.bat`.
 4. Workers copy each input to local scratch.
-5. Workers run the configured script from `orchestrator/tools/`.
+5. Workers run the configured script from `worker/tools/`.
 6. Results are copied back to `solved/`; logs are written under `logs/<job_id>/`.
 
-`orchestrator/framework/setup.bat` shares the `orchestrator/` folder as
+`worker/framework/setup.bat` shares the `worker/` folder as
 `\\<STORAGE_PC>\ComputeFarm` when you choose the share option. On mapped
 worker PCs, the framework path is normally `Z:\framework`, not
-`Z:\orchestrator\framework`.
+`Z:\worker\framework`.
 
 Useful commands:
 
 | Action | Command |
 | --- | --- |
-| Generate a manifest | `orchestrator/make_manifest.bat` |
-| Submit jobs | `orchestrator/submit.bat` |
-| Resubmit missing outputs only | `orchestrator/resubmit.bat` |
-| Purge queued jobs | `orchestrator/purge_queue.bat` |
-| Restart running workers | `orchestrator/restart_all_workers.bat` |
-| Stop workers | `orchestrator/stop_all_workers.bat` |
-| Clean local scratch data | `orchestrator/clean_scratch.bat` |
+| Generate a manifest | `worker/make_manifest.bat` |
+| Submit jobs | `worker/submit.bat` |
+| Resubmit missing outputs only | `worker/resubmit.bat` |
+| Purge queued jobs | `worker/purge_queue.bat` |
+| Restart running workers | `worker/restart_all_workers.bat` |
+| Stop workers | `worker/stop_all_workers.bat` |
+| Clean local scratch data | `worker/clean_scratch.bat` |
 
 The current manifest helpers are intentionally simple and scan top-level
 `raw/*.gsz` files. For another file type, edit the extension in
-`orchestrator/framework/generate_manifest.py` and
-`orchestrator/framework/_resubmit_helper.py`, or prepare manifests manually.
+`worker/framework/generate_manifest.py` and
+`worker/framework/_resubmit_helper.py`, or prepare manifests manually.
 
 ## Plugging In Software
 
 Software-specific logic belongs in:
 
 ```text
-orchestrator/tools/
+worker/tools/
 ```
 
 Add a run script for the software, for example:
 
 ```text
-orchestrator/tools/run_plaxis.ps1
-orchestrator/tools/run_training.ps1
-orchestrator/tools/run_my_processor.ps1
+worker/tools/run_plaxis.ps1
+worker/tools/run_training.ps1
+worker/tools/run_my_processor.ps1
 ```
 
 Then point ComputeFarm at it:
@@ -174,12 +174,12 @@ exit $LASTEXITCODE
 The queueing, retries, worker startup, logging, and copy-back behavior remain
 the same.
 
-## Flower / Control Panel
+## Orchestrator Monitoring
 
 The monitoring files live in:
 
 ```text
-worker/computefarm/
+orchestrator/computefarm/
 ```
 
 They provide:

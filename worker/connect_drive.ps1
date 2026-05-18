@@ -1,4 +1,4 @@
-# connect_drive.ps1 - map the ComputeFarm orchestrator share as Z: on a new worker PC.
+# connect_drive.ps1 - map the ComputeFarm worker share as Z: on a new worker PC.
 # Run once; /persistent:yes survives reboots.
 
 $share_host = "<STORAGE_PC>"

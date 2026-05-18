@@ -4,8 +4,8 @@ REM Just double-click. Each worker runs in its own cmd window with the
 REM self-restart wrapper from start_worker_{cpu,gpu}_only.bat, so they can
 REM be remote-restarted via:
 REM
-REM   <orchestrator-root>\restart_all_workers.bat   (broadcast bounce)
-REM   <orchestrator-root>\stop_all_workers.bat      (touch sentinel + shutdown)
+REM   <worker-root>\restart_all_workers.bat   (broadcast bounce)
+REM   <worker-root>\stop_all_workers.bat      (touch sentinel + shutdown)
 REM
 REM This file no longer launches celery directly — it delegates to the
 REM single-worker bats so all the self-restart, sentinel, and prefork wiring

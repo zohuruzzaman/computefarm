@@ -1,13 +1,13 @@
 # ComputeFarm Queue Setup
 
-This file covers the generic queue workflow under `orchestrator/`. Software-
-specific notes, including the bundled GeoStudio example, live in separate
-guides such as [GEOSTUDIO.md](GEOSTUDIO.md).
+This file covers the generic queue workflow under `worker/`. Software-specific
+notes, including the bundled GeoStudio example, live in separate guides such
+as [GEOSTUDIO.md](GEOSTUDIO.md).
 
-## Orchestrator Layout
+## Worker Layout
 
 ```text
-orchestrator/
+worker/
 |-- connect_drive.ps1
 |-- submit.bat
 |-- resubmit.bat
@@ -45,13 +45,13 @@ cd E:\Github\computerfarm
 On the Windows storage hub:
 
 ```powershell
-cd E:\Github\computerfarm\orchestrator\framework
+cd E:\Github\computerfarm\worker\framework
 .\setup.bat
 .\setup_check.bat
 ```
 
 `configure.ps1` sets the Redis host, storage share details, worker
-concurrency, and the selected script from `orchestrator/tools/`.
+concurrency, and the selected script from `worker/tools/`.
 
 ## Worker PCs
 
@@ -66,18 +66,18 @@ cd Z:\framework
 .\start_workers.bat
 ```
 
-If you used `orchestrator/framework/setup.bat` to create the share, the
-`orchestrator/` folder is shared as `\\STORAGE-PC\ComputeFarm`. In that common
-case, the mapped path is `Z:\framework`.
+If you used `worker/framework/setup.bat` to create the share, the `worker/`
+folder is shared as `\\STORAGE-PC\ComputeFarm`. In that common case, the
+mapped path is `Z:\framework`.
 
-If you instead shared the repository root, use `Z:\orchestrator\framework`.
+If you instead shared the repository root, use `Z:\worker\framework`.
 
 ## Job Flow
 
 ```text
 raw/<input files>
   -> copied to worker local scratch
-  -> processed by orchestrator/tools/<configured-script>
+  -> processed by worker/tools/<configured-script>
   -> copied back to solved/
   -> logs written under logs/<job_id>/
 ```
@@ -85,7 +85,7 @@ raw/<input files>
 The configured script is selected in:
 
 ```text
-orchestrator/framework/config.yaml
+worker/framework/config.yaml
 ```
 
 or with:
@@ -99,7 +99,7 @@ or with:
 From the storage hub:
 
 ```powershell
-cd E:\Github\computerfarm\orchestrator
+cd E:\Github\computerfarm\worker
 .\make_manifest.bat
 .\submit.bat
 ```
@@ -119,7 +119,7 @@ Useful commands:
 Manual manifest submission is also available:
 
 ```powershell
-cd E:\Github\computerfarm\orchestrator\framework
+cd E:\Github\computerfarm\worker\framework
 python generate_manifest.py ..\raw -o ..\manifests\batch.yaml
 python submit_manifest.py ..\manifests\batch.yaml
 ```
@@ -135,7 +135,7 @@ A processing failure is automatically requeued for another attempt, up to the
 retry limit in:
 
 ```text
-orchestrator/framework/tasks.py
+worker/framework/tasks.py
 ```
 
 Look for:
@@ -154,19 +154,18 @@ file exists.
 
 ## Path Detection
 
-`orchestrator/framework/config.py` resolves paths relative to the
-`orchestrator/` folder:
+`worker/framework/config.py` resolves paths relative to the `worker/` folder:
 
 ```text
-config.py:      Z:\orchestrator\framework\config.py
-root:           Z:\orchestrator
-raw_dir:        Z:\orchestrator\raw
-solved_dir:     Z:\orchestrator\solved
-logs_dir:       Z:\orchestrator\logs
-tools_dir:      Z:\orchestrator\tools
+config.py:      Z:\worker\framework\config.py
+root:           Z:\worker
+raw_dir:        Z:\worker\raw
+solved_dir:     Z:\worker\solved
+logs_dir:       Z:\worker\logs
+tools_dir:      Z:\worker\tools
 ```
 
-If the storage hub shares `orchestrator/` directly, the same layout appears on
+If the storage hub shares `worker/` directly, the same layout appears on
 workers as:
 
 ```text
@@ -192,7 +191,7 @@ http://<RPI_IP>:5555
 Per-job logs:
 
 ```text
-orchestrator/logs/<job_id>/
+worker/logs/<job_id>/
 ```
 
 Typical files include `meta.txt`, `stdout.attemptN.log`, and

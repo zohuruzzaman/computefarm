@@ -66,15 +66,15 @@ function Set-Text {
 $RpiIP = Read-Value -Prompt "Raspberry Pi / head-node IP" -Default $RpiIP -Required
 $StoragePC = Read-Value -Prompt "Windows storage PC hostname" -Default $StoragePC -Required
 $StoragePCIP = Read-Value -Prompt "Windows storage PC IP" -Default $StoragePCIP -Required
-$ShareName = Read-Value -Prompt "SMB share name for orchestrator folder" -Default $ShareName -Required
+$ShareName = Read-Value -Prompt "SMB share name for worker folder" -Default $ShareName -Required
 $RedisUser = Read-Value -Prompt "Redis username" -Default $RedisUser
 $RedisPassword = Read-Value -Prompt "Redis password (blank if none)" -Default $RedisPassword
 $CpuConcurrency = [int](Read-Value -Prompt "Celery CPU concurrency per worker" -Default ([string]$CpuConcurrency) -Required)
 $GpuConcurrency = [int](Read-Value -Prompt "Celery GPU concurrency per worker" -Default ([string]$GpuConcurrency) -Required)
-$SolveScript = Read-Value -Prompt "Solver script in orchestrator/tools" -Default $SolveScript -Required
+$SolveScript = Read-Value -Prompt "Solver script in worker/tools" -Default $SolveScript -Required
 
-$configYaml = Join-Path $RepoRoot "orchestrator\framework\config.yaml"
-$connectDrive = Join-Path $RepoRoot "orchestrator\connect_drive.ps1"
+$configYaml = Join-Path $RepoRoot "worker\framework\config.yaml"
+$connectDrive = Join-Path $RepoRoot "worker\connect_drive.ps1"
 
 Set-Text -Path $configYaml -Transform {
     param($text)
@@ -98,7 +98,7 @@ Set-Text -Path $connectDrive -Transform {
 Write-Host ""
 Write-Host "Configuration complete." -ForegroundColor Cyan
 Write-Host "Next steps:"
-Write-Host "  1. Run orchestrator\framework\setup.bat on the storage PC."
-Write-Host "  2. Choose 'y' when asked to share the orchestrator folder."
+Write-Host "  1. Run worker\framework\setup.bat on the storage PC."
+Write-Host "  2. Choose 'y' when asked to share the worker folder."
 Write-Host "  3. On worker PCs, run \\$StoragePC\$ShareName\connect_drive.ps1."
 Write-Host "  4. Then run Z:\framework\setup_check.bat and Z:\framework\start_workers.bat."
