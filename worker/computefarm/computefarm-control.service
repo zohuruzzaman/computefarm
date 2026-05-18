@@ -1,0 +1,24 @@
+[Unit]
+Description=ComputeFarm tiny control panel (Flower companion)
+After=network-online.target docker.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<RPI_USER>
+Group=<RPI_USER>
+WorkingDirectory=/home/<RPI_USER>/computefarm
+ExecStart=/usr/bin/python3 /home/<RPI_USER>/computefarm/reset_panel.py
+Restart=on-failure
+RestartSec=5
+
+# Reuse the same env vars Flower's compose uses, so we never drift apart
+Environment=REDIS_HOST=127.0.0.1
+Environment=REDIS_PORT=6379
+Environment=REDIS_USER=computefarm
+Environment=REDIS_PASSWORD=
+Environment=LISTEN_PORT=5556
+Environment=FLOWER_CONTAINER=computefarm-flower
+
+[Install]
+WantedBy=multi-user.target

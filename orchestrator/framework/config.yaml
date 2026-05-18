@@ -1,0 +1,63 @@
+# ComputeFarm configuration
+#
+# PATHS ARE AUTO-DETECTED. You do NOT need to set shared_root or drive letters.
+# The framework finds its own location on disk and builds all paths from there.
+#
+# Just drop the ComputeFarm folder anywhere and it works:
+#   \\SERVER\Share\ComputeFarm\
+#   D:\Projects\ComputeFarm\
+#   Z:\ComputeFarm\
+#
+# The only things you MUST set:
+#   - redis_host (your RPi5's IP)
+#
+# Everything else has sensible defaults you can override if needed.
+
+# ------------------------------------------------------------------
+# Raspberry Pi (orchestrator)
+# ------------------------------------------------------------------
+redis_host: "<YOUR_PI_IP>"
+redis_port: 6379
+
+# Redis auth.
+# - The Pi's host Redis has requirepass on the default user (used by
+#   queue-dashboard) and a separate ACL user `computefarm` with no
+#   password for this farm.
+# - For password-secret hygiene you can leave these blank in the file
+#   and set REDIS_USER / REDIS_PASSWORD env vars on each worker
+#   instead. Env vars take precedence over these.
+redis_user: "computefarm"
+redis_password: ""
+
+# ------------------------------------------------------------------
+# Folder names (relative to the ComputeFarm root)
+# Change these if you want different subfolder names.
+# ------------------------------------------------------------------
+raw_folder: "raw"
+solved_folder: "solved"
+logs_folder: "logs"
+tools_folder: "tools"
+manifests_folder: "manifests"
+
+# ------------------------------------------------------------------
+# Worker local scratch for fast I/O during solves.
+# Leave blank to auto-create next to the ComputeFarm root.
+# Set explicitly only if you want it on a specific fast drive.
+# ------------------------------------------------------------------
+local_scratch: ""
+
+# ------------------------------------------------------------------
+# GeoStudio defaults
+# Paths are relative to tools_folder unless absolute.
+# ------------------------------------------------------------------
+solve_script: "solve_gsz_geocmd.ps1"
+scripts_subdir: "geostudio_automation\\scripts"
+default_mesh_edge: 0
+default_timeout_minutes: 300
+
+# ------------------------------------------------------------------
+# Worker settings
+# ------------------------------------------------------------------
+cpu_concurrency: 2
+gpu_concurrency: 1
+result_expires: 1209600
