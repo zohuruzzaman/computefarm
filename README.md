@@ -1,415 +1,263 @@
 # ComputeFarm
 
-A **distributed batch solver** for GeoStudio `.gsz` files (or any single-file-in,
-single-file-out workload), built on Celery + Redis. Fan a queue of jobs across
-N Windows PCs, monitor from a dashboard, recover from worker crashes, scale
-by plugging in more PCs.
+ComputeFarm is a distributed batch-solving setup for GeoStudio `.gsz` files
+and similar single-file workloads. This repository is already extracted into
+two deployable parts:
 
----
+- `orchestrator/` - Celery worker framework, solver scripts, queue helpers,
+  and Windows batch files for submitting and managing jobs.
+- `worker/` - Raspberry Pi / head-node bundle for Redis, Flower, Ray,
+  monitoring, Samba file-drop workflows, and Windows Ray worker setup.
 
-## What it is, in one paragraph
+There is no zip step in this checkout. Use the folders directly.
 
-A Raspberry Pi (or any always-on host) runs Redis as the job broker and Flower
-as the live dashboard. One Windows PC owns a shared folder (the "storage hub")
-where raw inputs land and finished outputs collect. Every other Windows PC
-mounts that share, runs a Celery worker, pulls jobs from the queue, solves
-them locally (so SMB I/O stays cheap), and copies the result back. Jobs that
-fail are retried automatically up to 6 times. The whole stack is configured
-through one `config.yaml` file.
+## Repository Layout
 
-The reference workload bundled here is **GeoStudio 2025.2 slope-deformation
-solves**: each `.gsz` is opened by Seequent's `GeoCmd.exe`, the analysis chain
-(Initial Condition → Rainfall → FS → In Situ → Load/Deformation Day 1..N →
-Stress Redistribution) is run, and the now-populated `.gsz` is written back.
-Typical wall-time per `.gsz` is **~20 seconds on H15-scale templates**. Swap
-the solver in `tools/solve_gsz_geocmd.ps1` and the same farm runs any other
-"open file → run something → close file" batch.
+```text
+computerfarm/
+|-- README.md
+|-- SETUP.md
+|-- configure.ps1
+|-- orchestrator/
+|   |-- connect_drive.ps1
+|   |-- submit.bat
+|   |-- resubmit.bat
+|   |-- purge_queue.bat
+|   |-- restart_all_workers.bat
+|   |-- stop_all_workers.bat
+|   |-- clean_scratch.bat
+|   |-- make_manifest.bat
+|   |-- framework/
+|   |   |-- config.yaml
+|   |   |-- config.py
+|   |   |-- celery_app.py
+|   |   |-- tasks.py
+|   |   |-- generate_manifest.py
+|   |   |-- submit_manifest.py
+|   |   |-- setup.bat
+|   |   |-- setup_check.bat
+|   |   |-- start_workers.bat
+|   |   |-- start_worker_cpu_only.bat
+|   |   |-- start_worker_gpu_only.bat
+|   |   |-- requirements.txt
+|   |   |-- _ensure_python312.bat
+|   |   |-- _resolve_path.py
+|   |   `-- _resubmit_helper.py
+|   `-- tools/
+|       |-- solve_gsz_geocmd.ps1
+|       |-- solve_gsz.ps1
+|       `-- geostudio_automation/scripts/solve_and_extract.py
+`-- worker/
+    |-- README.md
+    |-- computefarm/
+    |   |-- docker-compose.yml
+    |   |-- reset_panel.py
+    |   |-- computefarm-control.service
+    |   `-- worker_aliases.json
+    `-- cluster/
+        |-- rpi_setup.sh
+        |-- setup_worker.ps1
+        |-- submit.ps1
+        |-- status.ps1
+        |-- worker.py
+        `-- jobs/
+            |-- example_handler.py
+            `-- solver.py
+```
 
----
+Runtime folders such as `raw/`, `solved/`, `logs/`, `manifests/`, `pending/`,
+`active/`, `results/`, and `failed/` are created by the setup scripts or by
+the running services.
+
+## Configure First
+
+Run the top-level configuration script once after cloning or copying the repo:
+
+```powershell
+.\configure.ps1
+```
+
+It asks for the Raspberry Pi/head-node IP, Windows storage PC hostname/IP,
+share name, Redis credentials, worker concurrency, and solver script. It then
+updates:
+
+| File | What gets patched |
+| --- | --- |
+| `orchestrator/framework/config.yaml` | Redis host/auth, concurrency, solver script |
+| `orchestrator/connect_drive.ps1` | Storage hostname/IP and share name |
+| `worker/cluster/setup_worker.ps1` | Default Ray head-node IP |
+| `worker/cluster/worker.py` | Default Ray head-node IP and storage UNC |
+
+You can also run it non-interactively:
+
+```powershell
+.\configure.ps1 `
+  -RpiIP 192.168.1.50 `
+  -StoragePC STORAGE-PC `
+  -StoragePCIP 192.168.1.20 `
+  -ShareName ComputeFarm `
+  -CpuConcurrency 2 `
+  -GpuConcurrency 1 `
+  -NonInteractive
+```
 
 ## Architecture
 
-```
-                ┌──────────────────────────────┐
-                │  Raspberry Pi (or any host)  │
-                │   Redis  (job broker)        │
-                │   Flower (dashboard :5555)   │
-                └──────────────┬───────────────┘
-                               │
-        ┌──────────────────────┼──────────────────────┐
-        │                      │                      │
-┌───────▼───────┐      ┌───────▼───────┐      ┌───────▼───────┐
-│  Worker PC 1  │      │  Worker PC 2  │  …   │  Worker PC N  │
-│  Celery       │      │  Celery       │      │  Celery       │
-│  GeoCmd.exe   │      │  GeoCmd.exe   │      │  GeoCmd.exe   │
-│  local scratch│      │  local scratch│      │  local scratch│
-└───────┬───────┘      └───────┬───────┘      └───────┬───────┘
-        │                      │                      │
-        └──────────┬───────────┴──────────────────────┘
-                   │
-       ┌───────────▼────────────┐
-       │   Storage Hub  (SMB)   │
-       │   raw\    *.gsz in     │
-       │   solved\ *.gsz out    │
-       │   logs\   per-job logs │
-       └────────────────────────┘
+ComputeFarm has two related layers that can be used independently:
+
+| Layer | Folder | Purpose |
+| --- | --- | --- |
+| Celery queue farm | `orchestrator/` | Submit `.gsz` jobs, run Windows Celery workers, copy solved files back to shared storage, and manage retries/logs. |
+| Pi/Ray head-node bundle | `worker/` | Set up the Raspberry Pi head node, Redis/Flower/control panel, Ray cluster services, Samba file-drop directories, and Windows Ray workers. |
+
+Typical deployment:
+
+```text
+Raspberry Pi / Linux head node
+  Redis, Flower, control panel, Ray, monitoring, Samba
+
+Windows storage hub
+  Shared orchestrator folder with raw inputs, solved outputs, logs, and manifests
+
+Windows worker PCs
+  Run Celery workers from orchestrator/framework or Ray workers from worker/cluster
 ```
 
-Three roles, in order of "how often you touch it":
+## Celery Workflow
 
-| Role | Runs on | What it does | How often you change it |
-|---|---|---|---|
-| **Worker** | Each Windows PC | Pulls jobs, runs solver, writes results back | Add a PC = run setup, done |
-| **Storage hub** | One Windows PC | Hosts the shared folder; submits jobs | Edit `config.yaml`, drop new `.gsz` into `raw\` |
-| **Pi orchestrator** | Raspberry Pi (or any Linux/Docker host) | Redis broker + Flower dashboard | Set up once, forget |
+The Celery workflow is under `orchestrator/`.
 
----
+1. Run `configure.ps1` from the repository root.
+2. On the storage hub, run `orchestrator/framework/setup.bat`.
+3. Put input `.gsz` files in the configured `raw/` directory.
+4. Run `orchestrator/submit.bat` to enqueue jobs.
+5. Start workers with `orchestrator/framework/start_workers.bat`.
+6. Finished `.gsz` files are copied to `solved/`; logs are written under
+   `logs/<job_id>/`.
 
-## Reference workload (the bundled example)
+`orchestrator/framework/setup.bat` shares the `orchestrator/` folder as
+`\\<STORAGE_PC>\ComputeFarm` when you choose the share option. On mapped
+worker PCs, that means the framework path is normally `Z:\framework`, not
+`Z:\orchestrator\framework`.
 
-The included `tools/solve_gsz_geocmd.ps1` runs the **GeoStudio 2025.2** chain
-on every `.gsz` it's handed. The corpus this was built for: **6,606 parametric
-slope-deformation templates** spanning H15/H18/H20/H25/H30/H40 embankment
-families × 12 covariance regimes × 5 analysis variants, all generated by the
-[`geostudio_automation`](https://github.com/) skill (a separate repo;
-included as a frozen subset under `tools/geostudio_automation/scripts/`).
+Useful commands:
 
-Each solved `.gsz` contains:
-- Mesh (`mesh_N.ply` at top level + per-analysis `Mesh.ply` snapshots)
-- Per-analysis time-step results: `node.csv`, `element.csv`, `gauss.csv`
-- SLOPE/W factor-of-safety: `lambdafos_*.csv` (FOSByMoment, FOSByForce)
-- SIGMA/W deformation: displacements, effective stresses, plastic state
+| Action | Command |
+| --- | --- |
+| Submit all raw jobs | `orchestrator/submit.bat` |
+| Resubmit missing solved files only | `orchestrator/resubmit.bat` |
+| Generate a manifest without submitting | `orchestrator/make_manifest.bat` |
+| Purge queued jobs | `orchestrator/purge_queue.bat` |
+| Restart running workers | `orchestrator/restart_all_workers.bat` |
+| Stop workers | `orchestrator/stop_all_workers.bat` |
+| Clean local scratch data | `orchestrator/clean_scratch.bat` |
 
-To use the farm for a **different workload**, edit `tools/solve_gsz_geocmd.ps1`
-to invoke whatever solver you want. The only contract:
-- Input: a local file path
-- Output: write results back to the same file (or anywhere on local disk; the
-  framework copies back what's at the input path's location). Exit code 0 on
-  success, non-zero on failure.
+The default fast GeoStudio path is:
 
----
-
-## Layout
-
-```
-ComputeFarm/
-├── README.md                          ← this file
-├── SETUP.md                           ← shorter quickstart
-├── connect_drive.ps1                  ← one-liner to map the SMB share as Z:
-├── rpi_bundle.zip                     ← Pi orchestrator setup (Redis + Flower
-│                                        + ACL config). Unzip on the Pi.
-│
-├── framework/                         ← Python code + worker launchers
-│   ├── config.py                      ← path/config loader (auto-detects root)
-│   ├── config.yaml                    ← THE config file (edit redis_host)
-│   ├── celery_app.py                  ← Celery app + worker_ready cleanup hooks
-│   ├── tasks.py                       ← the solve_geostudio task itself
-│   ├── submit_manifest.py             ← submit a YAML manifest of jobs
-│   ├── generate_manifest.py           ← build a manifest from raw\*.gsz
-│   ├── _resubmit_helper.py            ← diff raw\ vs solved\ for resubmit.bat
-│   ├── _resolve_path.py               ← UNC/Z:/local path normalizer
-│   ├── _ensure_python312.bat          ← installs Python 3.12 via winget if missing
-│   ├── requirements.txt               ← celery, redis, pyyaml, pandas, pyarrow, plyfile
-│   ├── setup.bat                      ← FIRST-TIME setup on a worker
-│   ├── setup_check.bat                ← verifies install + Pi reachable
-│   ├── start_worker_cpu_only.bat      ← launches CPU worker (prefork, self-restart)
-│   ├── start_worker_gpu_only.bat      ← launches GPU worker (prefork, self-restart)
-│   └── start_workers.bat              ← spawns both CPU + GPU launchers in separate windows
-│
-├── tools/                             ← solver scripts (the "what to run per job")
-│   ├── solve_gsz_geocmd.ps1           ← RECOMMENDED: GeoCmd.exe path (~20s/file)
-│   ├── solve_gsz.ps1                  ← Legacy gsi gRPC path (~53min/file)
-│   └── geostudio_automation/scripts/  ← frozen subset of the geo skill
-│                                        (only solve_and_extract.py is invoked
-│                                         by the legacy path; the rest is
-│                                         reference / corpus-fixer / validator)
-│
-├── purge_queue.bat                    ← empty the queue, leave workers alive
-├── restart_all_workers.bat            ← broadcast bounce (workers re-read config.yaml)
-├── stop_all_workers.bat               ← sentinel + shutdown (workers exit, stay down)
-├── clean_scratch.bat                  ← manual local-scratch janitor
-├── submit.bat                         ← submit raw\*.gsz to the queue
-├── resubmit.bat                       ← resubmit only files that aren't in solved\
-├── make_manifest.bat                  ← generate manifest yaml without submitting
-│
-└── (runtime dirs, created by setup.bat)
-    ├── raw\                           ← drop input .gsz files here
-    ├── solved\                        ← finished .gsz files land here
-    ├── logs\<job_id>\                 ← per-job stdout/stderr/meta
-    └── manifests\                     ← YAML job manifests
+```yaml
+solve_script: "solve_gsz_geocmd.ps1"
 ```
 
----
+That script lives at `orchestrator/tools/solve_gsz_geocmd.ps1` and runs
+Seequent GeoStudio through `GeoCmd.exe`. The legacy `gsi` path is
+`orchestrator/tools/solve_gsz.ps1`.
 
-## First-time setup
+## Pi / Ray Workflow
 
-### 1. Pi orchestrator (one time, ~10 min)
+The Pi and Ray bundle is under `worker/`.
+
+On the Raspberry Pi or Linux head node:
 
 ```bash
-# On the Raspberry Pi (or any Linux box with Docker):
-unzip rpi_bundle.zip
-cd rpi_bundle
-./install.sh          # installs Redis + Flower + ACL user `computefarm`
+chmod +x worker/cluster/rpi_setup.sh
+./worker/cluster/rpi_setup.sh
+
+mkdir -p ~/computefarm
+cp worker/computefarm/* ~/computefarm/
+cd ~/computefarm
+docker compose up -d
+sudo cp computefarm-control.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now computefarm-control
 ```
 
-Confirm:
-- Redis on `<pi-ip>:6379` (port open to your LAN)
-- Flower dashboard at `http://<pi-ip>:5555`
-
-The ACL user `computefarm` has no password and explicitly excludes `-@dangerous`
-(blocks `FLUSHDB` and friends), so workers can't accidentally wipe the broker.
-
-### 2. Storage hub (one time, ~5 min)
+On each Windows Ray worker, run PowerShell as Administrator:
 
 ```powershell
-# On the Windows PC that will host the shared folder:
-# Drop this whole folder somewhere (e.g. E:\ComputeFarm\)
-cd E:\ComputeFarm\framework
-notepad config.yaml                    # set redis_host to your Pi's IP
-.\setup.bat                            # creates raw\ solved\ logs\ manifests\, pip installs
-.\setup_check.bat                      # pings Pi, imports gsi, prints summary
-
-# Share the folder over SMB so workers can mount it:
-#   Right-click ComputeFarm folder → Properties → Sharing → Advanced
-#   → Share this folder, Permissions: give workers read+write
+.\worker\cluster\setup_worker.ps1 -HeadIP <RPI_IP> -NumCPUs 12 -NumGPUs 1
 ```
 
-### 3. Each worker PC (one time per worker, ~3 min each)
+Submit and inspect Ray jobs with:
 
 ```powershell
-# On every worker PC:
-\\STORAGE-PC\ComputeFarm\connect_drive.ps1     # maps the share as Z:
-Z:
-cd Z:\framework
-.\setup.bat                                    # pip install + winget Python 3.12 if missing
-.\setup_check.bat                              # confirms Pi reachable + gsi importable
-
-# Start the workers (both CPU and GPU launchers, each in its own window):
-.\start_workers.bat
+.\worker\cluster\submit.ps1 -Type solver -Config .\my_job.json -HeadIP <RPI_IP>
+.\worker\cluster\status.ps1 -Results -Failed -HeadIP <RPI_IP>
 ```
 
-Workers self-register with Redis and show up in Flower within 5 seconds.
+The Ray file-drop path watches the Samba share and moves jobs through
+`pending/`, `active/`, `results/`, and `failed/`.
 
----
+## Web UIs
 
-## Daily operations (from the storage hub, no RDPing required)
+After the head-node services are running:
 
-| Action | Bat |
-|---|---|
-| **Submit fresh jobs** (after dropping new files in `raw\`) | `submit.bat` |
-| **Resubmit only the un-solved** (diff raw\ vs solved\) | `resubmit.bat` |
-| **Stop new jobs but let in-flight finish** | `purge_queue.bat` |
-| **Bounce all workers** (after editing `config.yaml` or solver script) | `restart_all_workers.bat` |
-| **Shut down everything for the night** | `stop_all_workers.bat` |
-| **Wake up workers from the sentinel-down state** | RDP each worker once, re-run `start_workers.bat` |
+| Service | URL |
+| --- | --- |
+| Flower | `http://<RPI_IP>:5555` |
+| Control panel | `http://<RPI_IP>:5556` |
+| Grafana | `http://<RPI_IP>:3000` |
+| Ray dashboard | `http://<RPI_IP>:8265` |
+| MLflow | `http://<RPI_IP>:5000` |
+| Prometheus | `http://<RPI_IP>:9090` |
+| Registry API | `http://<RPI_IP>:8090/workers` |
 
-The `restart_all_workers.bat` works because the launcher (`start_worker_*_only.bat`)
-runs celery inside a `:loop` block — when celery exits (broadcast shutdown
-from anywhere), the loop relaunches it within 3 seconds. So clicking
-"Shutdown" in Flower becomes a de-facto restart.
+## Placeholders
 
-`stop_all_workers.bat` touches a sentinel file `WORKERS.stop` on the share;
-each worker's loop checks for it on every restart and exits permanently
-when found. Delete the sentinel and re-launch to bring the fleet back.
+Replace these placeholders before deployment:
 
----
+| Token | Meaning |
+| --- | --- |
+| `<RPI_IP>` | Raspberry Pi / head-node IP address |
+| `<RPI_USER>` | Linux user account used on the Pi |
+| `<STORAGE_PC>` | Windows storage PC hostname |
+| `<STORAGE_PC_IP>` | Windows storage PC IP address |
+| `<WORKER_IP>` | Example worker IP in comments or sample commands |
+| `<WORKER_HOSTNAME>` | Example worker hostname in comments or sample commands |
 
-## Monitoring
-
-- **Flower dashboard**: `http://<pi-ip>:5555` — live worker list, task counts,
-  failure rates, per-task duration, broadcast control buttons.
-- **Per-job logs**: `<root>\logs\<job_id>\` contains:
-  - `meta.txt` — attempt history, host, timing
-  - `stdout.attemptN.log` — solver output per attempt
-  - `stderr.attemptN.log` — solver errors per attempt
-- **Queue depth** (one-liner from storage hub):
-  ```powershell
-  py -3.12 -c "import sys; sys.path.insert(0, r'.\framework'); import redis; from config import CFG; print('cpu queue:', redis.Redis.from_url(CFG.redis_broker).llen('cpu'))"
-  ```
-
----
-
-## Tuning
-
-### Concurrency per worker
-
-Edit `framework/config.yaml`:
-```yaml
-cpu_concurrency: 2     # how many tasks each worker runs in parallel
-gpu_concurrency: 1
-```
-Then `restart_all_workers.bat`. Each worker reads the new value on next boot.
-
-You can also resize at runtime without restart (prefork pool only):
-```powershell
-celery -A celery_app control pool_grow 1   --destination=<host>_cpu@<host>
-celery -A celery_app control pool_shrink 1 --destination=<host>_cpu@<host>
-```
-Or click "Grow pool" / "Shrink pool" on the worker's row in Flower.
-
-### License-bound workloads (the GeoStudio case)
-
-GeoStudio uses a floating-license daemon. With a 20-seat cap, total concurrency
-across all workers should stay ≤ 20 to avoid starvation hangs. With
-`cpu_concurrency: 2` and 5 workers, you use 10 seats — safe headroom.
-
-### Switching solvers
-
-Edit `framework/config.yaml`:
-```yaml
-solve_script: "solve_gsz_geocmd.ps1"     # default (recommended, fast)
-# or:
-solve_script: "solve_gsz.ps1"            # legacy gsi path (slower)
-```
-Then `restart_all_workers.bat`. Or drop in your own PowerShell script and
-point at it — same interface: `script.ps1 -GszPath <local-path>` returns
-exit 0 on success, non-zero on failure.
-
-### Retry policy
-
-Top of `framework/tasks.py`:
-```python
-SOLVE_MAX_ATTEMPTS = 6           # 1 original + 5 retries
-SOLVE_RETRY_DELAY_SEC = 300      # 5 minutes between attempts
-```
-
----
-
-## How a job flows through the system
-
-1. **Submit**: `submit.bat` reads `raw\*.gsz`, builds a manifest, publishes each
-   file as a `tasks.solve_geostudio` task on the `cpu` queue.
-2. **Pickup**: Any worker pulls the next task. Celery's `acks_late` ensures
-   that if the worker dies mid-solve, Redis redelivers the task to another
-   worker without consuming a retry slot.
-3. **Local copy**: Worker copies the `.gsz` from `\\STORAGE\raw\` to its own
-   local scratch dir (`C:\ComputeFarm_scratch\<host>\<pid>\<job_id>\`). All
-   subsequent disk I/O stays local — SMB only takes three short copies per job
-   (in, out, log upload).
-4. **Solve**: Worker invokes `tools\<solve_script>` (PowerShell) with the
-   local path. The PowerShell script runs the actual solver (GeoCmd.exe by
-   default). Stdout/stderr buffer to local files.
-5. **Result back**: On exit code 0, the worker copies the now-solved `.gsz`
-   to `\\STORAGE\solved\`, copies stdout/stderr to `\\STORAGE\logs\<job_id>\`,
-   cleans up local scratch, and acks the task.
-6. **Failure**: On non-zero exit or unhandled exception, the worker writes
-   the error to `meta.txt`, schedules a retry in 5 minutes (re-queued for
-   any worker, not pinned), and after 6 failed attempts saves a
-   `<stem>_PARTIAL.gsz` to `solved\` as a forensic record.
-
----
-
-## Adapting for a different workload
-
-You're not locked into GeoStudio. The contract for a custom solver script is:
+On PowerShell:
 
 ```powershell
-# tools\my_solver.ps1
-param([Parameter(Mandatory=$true)][string]$GszPath)
-# (Other parameters like -MeshEdge are accepted by the framework but
-#  you're free to ignore them. Workers pass them positionally if set.)
-
-& 'C:\path\to\your\solver.exe' $GszPath ...
-exit $LASTEXITCODE
+rg "<RPI_IP>|<RPI_USER>|<STORAGE_PC>|<STORAGE_PC_IP>|<WORKER_IP>|<WORKER_HOSTNAME>"
 ```
 
-Then in `framework/config.yaml`:
+## Adapting the Solver
+
+For a different single-file workload, add a PowerShell script under
+`orchestrator/tools/` and point `orchestrator/framework/config.yaml` at it:
+
 ```yaml
 solve_script: "my_solver.ps1"
 ```
 
-`restart_all_workers.bat`, drop new input files into `raw\`, `submit.bat`.
-That's the whole adaptation. Nothing about the queueing, retry, monitoring,
-or scaling layer cares what your solver is.
+The Celery framework expects the script to accept a local input path and exit
+with code `0` on success:
 
-If your workload doesn't operate on `.gsz` files specifically, the input
-path can be anything (the framework just passes a string to your script).
-Files don't have to live in `raw\` — `generate_manifest.py` accepts any
-directory.
+```powershell
+param([Parameter(Mandatory=$true)][string]$GszPath)
 
----
-
-## Troubleshooting
-
-### "No nodes replied within time constraint" when calling `celery control`
-Workers are down or unreachable. Check Flower (`http://<pi-ip>:5555`) — if no
-workers listed, restart each on its host. Otherwise check Pi's Redis is up
-(`redis-cli -h <pi-ip> ping`).
-
-### Worker crashloop with "ModuleNotFoundError: No module named 'config'"
-Your `cd /d %~dp0` hit a UNC path and silently fell back to `C:\Windows\`. The
-launcher uses `pushd "%~dp0"` to handle this — make sure you're running the
-latest `start_worker_*_only.bat` (search the file for `pushd` to confirm).
-
-### "License unavailable" errors
-GeoStudio's floating-license seat exhausted. Total `cpu_concurrency × worker_count`
-exceeds your seat cap. Drop `cpu_concurrency` and `restart_all_workers.bat`.
-
-### Workers solve but `solved\` stays empty
-SMB share permissions. Check the worker can write to `\\STORAGE\solved\` by
-hand from its desktop.
-
-### File ends up as `<stem>_PARTIAL.gsz` in `solved\`
-That's the final-failure marker. Inspect
-`logs\<job_id>\stdout.attempt6.log` for the actual error. Likely a model bug
-in the `.gsz` itself — see the corpus validators in
-`tools/geostudio_automation/scripts/validate_gsz.py` (if you're on the GeoStudio
-workload).
-
-### Queue full of duplicates
-Run `purge_queue.bat`, then `resubmit.bat`. `resubmit.bat` diffs `raw\` vs
-`solved\` and only enqueues what's actually missing — safe to spam.
-
----
-
-## Security
-
-This bundle assumes the Pi sits on a **trusted network** (LAN, VPN, or
-mesh-network like Tailscale). The default `config.yaml` ships with:
-
-```yaml
-redis_user: "computefarm"
-redis_password: ""           # blank — relies on ACL + network trust
+& "C:\path\to\solver.exe" $GszPath
+exit $LASTEXITCODE
 ```
 
-The Pi-side install (`rpi_bundle.zip`) creates a Redis ACL user `computefarm`
-with no password but with `-@dangerous` excluded (blocks `FLUSHDB` and other
-destructive commands), so workers can't accidentally wipe the broker. This
-works because only trusted machines can reach the Pi at all.
+The queueing, retries, logging, and worker management stay the same.
 
-**If you deploy on a network with untrusted peers** (shared cloud VPC, dorm
-WiFi, etc.), do all three:
+## Security Notes
 
-1. Set `requirepass` on the Pi's Redis (`/etc/redis/redis.conf`) and a
-   matching ACL password for the `computefarm` user.
-2. Set the password on every worker via env var:
-   `setx REDIS_PASSWORD "your-password"` (or fill `redis_password:` in
-   `config.yaml`).
-3. Firewall the Pi's port 6379 to only accept connections from your worker
-   PCs.
+This repository assumes the head node, storage hub, and workers are on a
+trusted LAN, VPN, or mesh network. The bundled Flower/control-panel services
+are intended for trusted networks unless you add authentication and firewall
+rules.
 
-No other credentials are stored anywhere in this bundle. No SSH keys, no API
-tokens, no cloud creds. Your `.gsz` inputs and `.gsz` results are stored in
-plain text in your shared folder — apply NTFS / SMB permissions accordingly.
-
-## What's NOT included
-
-- The Pi-side install (Redis + Flower + ACL setup) — that's in `rpi_bundle.zip`,
-  extract on the Pi.
-- The `geostudio_automation` skill in full — only `solve_and_extract.py` ships
-  here as the legacy gsi solver's dependency. Get the full skill (corpus
-  generator, validators, fixers, smoke_solve) separately if you want to
-  generate `.gsz` corpora rather than just solve them.
-- Your actual `.gsz` inputs (or whatever your workload's inputs are) — drop
-  them into `raw\` yourself.
-
----
-
-## Provenance
-
-Built and battle-tested on a 5-PC + 1-Pi farm running GeoStudio 2025.2 against
-a 6,606-file slope-deformation corpus. The recommended path
-(`solve_gsz_geocmd.ps1` + prefork + self-restart wrapper) was reached after
-discovering that the gsi gRPC API was throttling solves ~160× vs the direct
-GeoCmd.exe CLI. See the `geostudio_automation` skill's `SKILL.md` for the
-empirical breakdown.
+Redis and SMB access should be restricted to your worker machines. Do not
+expose Redis, Flower, the control panel, Grafana, Ray, MLflow, Prometheus, or
+the Samba share directly to the public internet.

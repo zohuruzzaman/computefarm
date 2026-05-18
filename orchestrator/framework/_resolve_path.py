@@ -4,10 +4,10 @@ on this PC. Used by make_manifest.bat so manifests emit UNC paths
 automatically in multi-worker setups.
 
 Usage:
-    python _resolve_path.py "E:\fem\worker_pc\raw"
+    python _resolve_path.py "Z:\raw"
 Prints either:
-    \\HOST\sharename\raw     (if E:\fem\worker_pc is shared as 'sharename')
-    E:\fem\worker_pc\raw     (unchanged, if no share covers it)
+    \\HOST\sharename\raw     (if the path is covered by an SMB share)
+    Z:\raw                   (unchanged, if no share covers it)
 
 Detection is best-effort via `net share`. If parsing fails, prints the
 input unchanged - falls back to single-machine local-path mode.

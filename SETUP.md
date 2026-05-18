@@ -1,115 +1,189 @@
 # ComputeFarm Setup
 
-## Drop anywhere and run
+This checkout is already extracted. The Celery framework lives under
+`orchestrator/`, and the Pi/Ray head-node bundle lives under `worker/`.
 
-The framework auto-detects where it lives. No drive letters to configure.
+For the standard Celery GeoStudio workflow, start in `orchestrator/`.
 
-```
-Put this folder anywhere:
-  D:\MyFarm\              or  Z:\ComputeFarm\  or  \\SERVER\Share\Farm\
-    framework\            <- auto-detects parent as root
-      config.yaml         <- ONLY set redis_host (Pi's IP)
-      setup.bat           <- first-time: creates subfolders, installs packages
-      setup_check.bat     <- verify everything works
-      start_workers.bat   <- fire it up
-      ...
-    tools\                <- pre-bundled: solve_gsz.ps1 + geostudio_automation\scripts\
-      solve_gsz.ps1
-      geostudio_automation\scripts\solve_and_extract.py
-    manifests\
-    raw\                  <- created by setup.bat
-    solved\
-    logs\
-```
+## Orchestrator Layout
 
-## Worker role (what runs on each worker PC)
-
-Mesh + solve + push back. That's it.
-
-```
-raw\*.gsz  --copy-->  local scratch  --mesh+solve+save-->  copy back to solved\
-```
-
-No parquet, no CSVs leave the .gsz. Extraction is a separate step that runs
-on the storage PC (or wherever) over the finished `solved\*.gsz` files.
-
-## Retry policy
-
-A `.gsz` that fails to solve is automatically requeued for another attempt -
-up to **6 attempts total**, with **5 minutes between attempts**. The retry
-is delivered through Redis to any worker subscribed to the queue (not
-pinned to the worker that hit the failure), so a busy or licensing-
-contended box doesn't block the job.
-
-- Worker crashes mid-solve are handled separately (the message is
-  redelivered to another worker) and do **not** count against the 6-attempt
-  budget.
-- A `<stem>_PARTIAL.gsz` is dropped into `solved\` only on the **final**
-  failure - intermediate retries don't litter `solved\`.
-- Per-attempt stdout/stderr are kept as `stdout.attempt1.log`,
-  `stdout.attempt2.log`, ... under `logs\<job_id>\`.
-- After 6 failed attempts the task ends in Celery `FAILURE` and
-  `meta.txt` says `Status: FAILED after 6 attempts` - that's the
-  manual-intervention signal.
-
-Tune the retry count and delay at the top of `framework\tasks.py`:
-`SOLVE_MAX_ATTEMPTS` and `SOLVE_RETRY_DELAY_SEC`.
-
-## First time setup
-
-1. Drop the `ComputeFarm` folder wherever you want it
-2. Double-click `framework\setup.bat` - creates subfolders, installs packages, optionally shares on network
-3. `framework\config.yaml` already points at the live Pi (`redis_host: <YOUR_PI_IP>`). Override only if the Pi moves.
-4. Install the GeoStudio gsi wheel from `C:\Program Files\Seequent\GeoStudio 2025.2\API\gsi-*.whl`. (Optional: `pip install pandas` to enable the FoS min/max line in the post-solve summary.)
-5. Double-click `framework\setup_check.bat` to verify
-6. Double-click `framework\start_workers.bat` to begin
-
-## On additional worker PCs
-
-1. Map the shared drive: `net use Z: \\STORAGE-PC\ComputeFarm /persistent:yes`
-2. Install packages: `pip install -r Z:\ComputeFarm\framework\requirements.txt`
-3. Install the GeoStudio gsi wheel
-4. Run `setup_check.bat`
-5. Run `start_workers.bat`
-
-## How paths work
-
-`config.py` finds its own location on disk:
-
-```
-config.py is at:    Z:\ComputeFarm\framework\config.py
-framework/ parent:  Z:\ComputeFarm\                      <- this becomes ROOT
-raw_dir:            Z:\ComputeFarm\raw\                  <- ROOT / "raw"
-solved_dir:         Z:\ComputeFarm\solved\               <- ROOT / "solved"
-logs_dir:           Z:\ComputeFarm\logs\                 <- ROOT / "logs"
-tools_dir:          Z:\ComputeFarm\tools\                <- ROOT / "tools"
-solve_script:       Z:\ComputeFarm\tools\solve_gsz.ps1   <- tools / "solve_gsz.ps1"
+```text
+orchestrator/
+|-- connect_drive.ps1
+|-- submit.bat
+|-- resubmit.bat
+|-- purge_queue.bat
+|-- restart_all_workers.bat
+|-- stop_all_workers.bat
+|-- clean_scratch.bat
+|-- make_manifest.bat
+|-- framework/
+|   |-- config.yaml
+|   |-- setup.bat
+|   |-- setup_check.bat
+|   |-- start_workers.bat
+|   |-- generate_manifest.py
+|   |-- submit_manifest.py
+|   |-- tasks.py
+|   `-- requirements.txt
+`-- tools/
+    |-- solve_gsz_geocmd.ps1
+    |-- solve_gsz.ps1
+    `-- geostudio_automation/scripts/solve_and_extract.py
 ```
 
-Move the whole folder to `D:\Farm\` and it auto-adjusts:
+Runtime folders such as `raw/`, `solved/`, `logs/`, and `manifests/` are
+created by setup or by the running workflow.
 
+## First-Time Setup
+
+On the Windows storage hub:
+
+```powershell
+cd E:\Github\computerfarm\orchestrator\framework
+notepad config.yaml
+.\setup.bat
+.\setup_check.bat
 ```
-ROOT:               D:\Farm\
-raw_dir:            D:\Farm\raw\
-solved_dir:         D:\Farm\solved\
-...
+
+In `config.yaml`, set the Redis host, shared paths, concurrency, and solver
+script for your deployment. The default fast GeoStudio solver is:
+
+```yaml
+solve_script: "solve_gsz_geocmd.ps1"
 ```
 
-Scratch auto-detects too:
-- Local drive (D:\Farm\) -> scratch at D:\ComputeFarm_scratch\
-- Network path (\\SERVER\...) -> scratch at C:\ComputeFarm_scratch\
+That script is located at `orchestrator/tools/solve_gsz_geocmd.ps1`.
 
-## Submitting jobs
+## Worker PCs
 
-```bat
-cd /d Z:\ComputeFarm\framework
+On each Windows worker:
 
+```powershell
+\\STORAGE-PC\ComputeFarm\connect_drive.ps1
+Z:
+cd Z:\framework
+.\setup.bat
+.\setup_check.bat
+.\start_workers.bat
+```
+
+If you used `orchestrator/framework/setup.bat` to create the share, the
+`orchestrator/` folder is shared as `\\STORAGE-PC\ComputeFarm`. In that common
+case, the mapped path is `Z:\framework`.
+
+If you instead shared the repository root, use `Z:\orchestrator\framework`.
+
+## Job Flow
+
+```text
+raw/*.gsz
+  -> copied to worker local scratch
+  -> solved by orchestrator/tools/<solve_script>
+  -> copied back to solved/
+  -> logs written under logs/<job_id>/
+```
+
+No parquet or CSV outputs are required for the queue workflow. The solved
+`.gsz` file is the primary output.
+
+## Submitting Jobs
+
+From the storage hub:
+
+```powershell
+cd E:\Github\computerfarm\orchestrator
+.\submit.bat
+```
+
+Useful commands:
+
+| Action | Command |
+| --- | --- |
+| Submit all raw jobs | `submit.bat` |
+| Resubmit missing solved files only | `resubmit.bat` |
+| Generate manifest only | `make_manifest.bat` |
+| Purge queued jobs | `purge_queue.bat` |
+| Restart workers | `restart_all_workers.bat` |
+| Stop workers | `stop_all_workers.bat` |
+| Clean scratch | `clean_scratch.bat` |
+
+Manual manifest submission is also available:
+
+```powershell
+cd E:\Github\computerfarm\orchestrator\framework
 python generate_manifest.py ..\raw -o ..\manifests\batch.yaml
 python submit_manifest.py ..\manifests\batch.yaml
 ```
 
+## Retry Policy
+
+A `.gsz` that fails to solve is automatically requeued for another attempt, up
+to 6 attempts total, with 5 minutes between attempts.
+
+Worker crashes mid-solve are handled separately by Celery message redelivery
+and do not count against the retry budget.
+
+After the final failed attempt, a `<stem>_PARTIAL.gsz` file is written to
+`solved/` as a forensic record, and logs remain under `logs/<job_id>/`.
+
+The retry constants are in:
+
+```text
+orchestrator/framework/tasks.py
+```
+
+Look for:
+
+```python
+SOLVE_MAX_ATTEMPTS
+SOLVE_RETRY_DELAY_SEC
+```
+
+## Path Detection
+
+`orchestrator/framework/config.py` resolves paths relative to the
+`orchestrator/` folder:
+
+```text
+config.py:      Z:\orchestrator\framework\config.py
+root:           Z:\orchestrator
+raw_dir:        Z:\orchestrator\raw
+solved_dir:     Z:\orchestrator\solved
+logs_dir:       Z:\orchestrator\logs
+tools_dir:      Z:\orchestrator\tools
+solve_script:   Z:\orchestrator\tools\solve_gsz_geocmd.ps1
+```
+
+If the storage hub shares `orchestrator/` directly, the same layout appears on
+workers as:
+
+```text
+config.py:      Z:\framework\config.py
+root:           Z:\
+raw_dir:        Z:\raw
+solved_dir:     Z:\solved
+logs_dir:       Z:\logs
+tools_dir:      Z:\tools
+solve_script:   Z:\tools\solve_gsz_geocmd.ps1
+```
+
+Local scratch storage is selected separately by the worker code, typically
+under `C:\ComputeFarm_scratch\` for network-based runs.
+
 ## Monitoring
 
-Dashboard: `http://<PI_IP>:5555`
+Flower dashboard:
 
-Logs: `<root>\logs\<job_id>\meta.txt` / `stdout.log` / `stderr.log`
+```text
+http://<RPI_IP>:5555
+```
+
+Per-job logs:
+
+```text
+orchestrator/logs/<job_id>/
+```
+
+Typical files include `meta.txt`, `stdout.attemptN.log`, and
+`stderr.attemptN.log`.

@@ -1,12 +1,11 @@
-# connect_drive.ps1 — map the ComputeFarm share as Z: on a new worker PC.
+# connect_drive.ps1 - map the ComputeFarm orchestrator share as Z: on a new worker PC.
 # Run once; /persistent:yes survives reboots.
 
 $share_host = "<STORAGE_PC>"
-$share_ip   = "<YOUR_PI_IP>"
+$share_ip   = "<STORAGE_PC_IP>"
 $share_name = "ComputeFarm"
 $drive      = "Z:"
 
-# Check if already mapped
 $existing = Get-PSDrive -Name Z -ErrorAction SilentlyContinue
 if ($existing) {
     Write-Host "Z: is already mapped to $($existing.DisplayRoot)" -ForegroundColor Yellow
@@ -14,7 +13,6 @@ if ($existing) {
     exit 0
 }
 
-# Try hostname first, fall back to IP
 foreach ($target in @($share_host, $share_ip)) {
     Write-Host "Trying \\$target\$share_name ..."
     net use $drive "\\$target\$share_name" /persistent:yes 2>$null
