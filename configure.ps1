@@ -75,8 +75,6 @@ $SolveScript = Read-Value -Prompt "Solver script in orchestrator/tools" -Default
 
 $configYaml = Join-Path $RepoRoot "orchestrator\framework\config.yaml"
 $connectDrive = Join-Path $RepoRoot "orchestrator\connect_drive.ps1"
-$raySetupWorker = Join-Path $RepoRoot "worker\cluster\setup_worker.ps1"
-$rayWorker = Join-Path $RepoRoot "worker\cluster\worker.py"
 
 Set-Text -Path $configYaml -Transform {
     param($text)
@@ -94,19 +92,6 @@ Set-Text -Path $connectDrive -Transform {
     $text = $text -replace '(?m)^\$share_host\s*=.*$', "`$share_host = `"$StoragePC`""
     $text = $text -replace '(?m)^\$share_ip\s*=.*$', "`$share_ip   = `"$StoragePCIP`""
     $text = $text -replace '(?m)^\$share_name\s*=.*$', "`$share_name = `"$ShareName`""
-    return $text
-}
-
-Set-Text -Path $raySetupWorker -Transform {
-    param($text)
-    $text = $text -replace '\[string\]\$HeadIP\s*=\s*"[^"]*"', "[string]`$HeadIP    = `"$RpiIP`""
-    return $text
-}
-
-Set-Text -Path $rayWorker -Transform {
-    param($text)
-    $text = $text -replace 'HEAD_IP\s*=\s*"[^"]*"', "HEAD_IP            = `"$RpiIP`""
-    $text = $text -replace 'STORAGE_UNC\s*=\s*r"[^"]*"', "STORAGE_UNC        = r`"\\$RpiIP\storage`""
     return $text
 }
 

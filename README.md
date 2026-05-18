@@ -10,9 +10,8 @@ or unzip step in this checkout.
 
 ## What It Provides
 
-- A Celery + Redis queue path for shared-folder batch jobs.
-- A Raspberry Pi / Linux head-node bundle for Redis, Flower, Ray, monitoring,
-  Samba file-drop workflows, and control-panel services.
+- A Celery + Redis queue for shared-folder batch jobs.
+- Flower and a small control panel for monitoring and session management.
 - Windows worker launchers with local scratch directories, retry handling,
   logs, and restart/stop controls.
 - A configurable `orchestrator/tools/` folder where each software package gets
@@ -41,12 +40,11 @@ computerfarm/
 |   `-- tools/
 `-- worker/
     |-- README.md
-    |-- computefarm/
-    `-- cluster/
+    `-- computefarm/
 ```
 
-Runtime folders such as `raw/`, `solved/`, `logs/`, `manifests/`, `pending/`,
-`active/`, `results/`, and `failed/` are created by setup scripts or services.
+Runtime folders such as `raw/`, `solved/`, `logs/`, and `manifests/` are
+created by setup scripts or services.
 
 ## Configure First
 
@@ -64,8 +62,6 @@ updates:
 | --- | --- |
 | `orchestrator/framework/config.yaml` | Redis host/auth, concurrency, solver script |
 | `orchestrator/connect_drive.ps1` | Storage hostname/IP and share name |
-| `worker/cluster/setup_worker.ps1` | Default Ray head-node IP |
-| `worker/cluster/worker.py` | Default Ray head-node IP and storage UNC |
 
 Non-interactive example:
 
@@ -83,29 +79,30 @@ Non-interactive example:
 
 ## Architecture
 
-ComputeFarm has two related layers that can be used independently:
-
-| Layer | Folder | Purpose |
-| --- | --- | --- |
-| Queue farm | `orchestrator/` | Submit files, run Windows workers, copy outputs back to shared storage, and manage retries/logs. |
-| Head-node/Ray bundle | `worker/` | Set up the Pi/Linux head node, Redis/Flower/control panel, Ray services, Samba directories, and Windows Ray workers. |
-
-Typical deployment:
-
 ```text
-Raspberry Pi / Linux head node
-  Redis, Flower, control panel, Ray, monitoring, Samba
+Redis broker + Flower/control panel
+  Runs on the Raspberry Pi, Linux host, or any always-on machine
 
 Windows storage hub
   Shared orchestrator folder with raw inputs, outputs, logs, and manifests
 
 Windows worker PCs
-  Run queue workers from orchestrator/framework or Ray workers from worker/cluster
+  Run Celery workers from orchestrator/framework
+```
+
+The active execution path is:
+
+```text
+raw/
+  -> make_manifest.bat
+  -> submit.bat
+  -> Redis/Celery
+  -> Windows Celery workers
+  -> orchestrator/tools/<configured-script>.ps1
+  -> solved/
 ```
 
 ## Queue Workflow
-
-The generic queue workflow is:
 
 1. Put input files in the configured `raw/` folder.
 2. Generate a manifest with `orchestrator/make_manifest.bat`.
@@ -177,51 +174,29 @@ exit $LASTEXITCODE
 The queueing, retries, worker startup, logging, and copy-back behavior remain
 the same.
 
-## Head-Node / Ray Workflow
+## Flower / Control Panel
 
-The Pi and Ray bundle is under `worker/`.
+The monitoring files live in:
 
-On the Raspberry Pi or Linux head node:
-
-```bash
-chmod +x worker/cluster/rpi_setup.sh
-./worker/cluster/rpi_setup.sh
-
-mkdir -p ~/computefarm
-cp worker/computefarm/* ~/computefarm/
-cd ~/computefarm
-docker compose up -d
-sudo cp computefarm-control.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now computefarm-control
+```text
+worker/computefarm/
 ```
 
-On each Windows Ray worker, run PowerShell as Administrator:
+They provide:
 
-```powershell
-.\worker\cluster\setup_worker.ps1 -HeadIP <RPI_IP> -NumCPUs 12 -NumGPUs 1
-```
+| File | Purpose |
+| --- | --- |
+| `docker-compose.yml` | Starts Flower on port `5555`. |
+| `reset_panel.py` | Small control panel on port `5556`. |
+| `computefarm-control.service` | systemd service for the control panel. |
+| `worker_aliases.json` | Friendly names for Celery workers. |
 
-Submit and inspect Ray jobs with:
-
-```powershell
-.\worker\cluster\submit.ps1 -Type solver -Config .\my_job.json -HeadIP <RPI_IP>
-.\worker\cluster\status.ps1 -Results -Failed -HeadIP <RPI_IP>
-```
-
-## Web UIs
-
-After the head-node services are running:
+Web UIs:
 
 | Service | URL |
 | --- | --- |
 | Flower | `http://<RPI_IP>:5555` |
 | Control panel | `http://<RPI_IP>:5556` |
-| Grafana | `http://<RPI_IP>:3000` |
-| Ray dashboard | `http://<RPI_IP>:8265` |
-| MLflow | `http://<RPI_IP>:5000` |
-| Prometheus | `http://<RPI_IP>:9090` |
-| Registry API | `http://<RPI_IP>:8090/workers` |
 
 ## Placeholders
 
@@ -250,5 +225,5 @@ are intended for trusted networks unless you add authentication and firewall
 rules.
 
 Redis and SMB access should be restricted to worker machines. Do not expose
-Redis, Flower, the control panel, Grafana, Ray, MLflow, Prometheus, or the
-Samba share directly to the public internet.
+Redis, Flower, the control panel, or the SMB share directly to the public
+internet.
