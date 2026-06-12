@@ -53,11 +53,13 @@ local_scratch: ""
 solve_script: "solve_gsz_geocmd.ps1"
 scripts_subdir: "geostudio_automation\\scripts"
 default_mesh_edge: 0
-default_timeout_minutes: 300
+# Hard cap is now just a far backstop; real stall-detection is a PROGRESS
+# watchdog in the driver (kills only if the .gsz/backup/log stops growing).
+default_timeout_minutes: 600
 
 # ------------------------------------------------------------------
 # Worker settings
 # ------------------------------------------------------------------
-cpu_concurrency: 2
+cpu_concurrency: 4
 gpu_concurrency: 1
 result_expires: 1209600

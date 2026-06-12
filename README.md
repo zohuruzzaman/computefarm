@@ -11,6 +11,16 @@ or unzip step in this checkout.
 ## What It Provides
 
 - A Celery + Redis queue for shared-folder batch jobs.
+- **`farm.bat` — a single operator CLI** (status, stats, queue management,
+  submit/resume/retry, remote start/stop, nuke) plus a numbered interactive
+  dashboard when double-clicked. See `worker/README.md` for the full guide.
+- A **node watchdog** (plain Python via Task Scheduler) per worker PC:
+  heartbeat telemetry (CPU/RAM/disk/GPU util+temp/uptime), orphan-process
+  sweeping, and sentinel-controlled auto-restart → remote `farm start/stop`.
+- Reliability rails: batch-stamped submissions (stale queue messages are
+  dropped on arrival), idempotent solves (resume = resubmit), a per-job
+  progress beacon (live stall detection), process-tree kills on every
+  timeout (no orphaned solver zombies), and pidfile single-instance workers.
 - Flower and a small control panel for monitoring and session management.
 - Windows worker launchers with local scratch directories, retry handling,
   logs, and restart/stop controls.
@@ -28,16 +38,13 @@ computerfarm/
 |-- GEOSTUDIO.md
 |-- configure.ps1
 |-- worker/
-|   |-- connect_drive.ps1
-|   |-- submit.bat
-|   |-- resubmit.bat
-|   |-- purge_queue.bat
-|   |-- restart_all_workers.bat
-|   |-- stop_all_workers.bat
-|   |-- clean_scratch.bat
-|   |-- make_manifest.bat
-|   |-- framework/
-|   `-- tools/
+|   |-- README.md          <- full operator guide
+|   |-- farm.bat           <- the one CLI / interactive dashboard
+|   |-- framework/         <- Celery app, tasks, config, worker launchers
+|   |-- ops/               <- farm.py CLI, farm_console.py dashboard,
+|   |                         node_watchdog.py + install_watchdog.bat,
+|   |                         connect_drive.ps1
+|   `-- tools/             <- per-software driver scripts
 `-- orchestrator/
     |-- README.md
     `-- computefarm/
@@ -94,8 +101,8 @@ The active execution path is:
 
 ```text
 raw/
-  -> make_manifest.bat
-  -> submit.bat
+  -> farm manifest raw -o manifests/batch.yaml
+  -> farm submit manifests/batch.yaml --fresh
   -> Redis/Celery
   -> Windows Celery workers
   -> worker/tools/<configured-script>.ps1
@@ -105,10 +112,12 @@ raw/
 ## Queue Workflow
 
 1. Put input files in the configured `raw/` folder.
-2. Generate a manifest with `worker/make_manifest.bat`.
-3. Submit the manifest with `worker/submit.bat`.
+2. `farm manifest raw -o manifests\batch.yaml`
+3. `farm submit manifests\batch.yaml --fresh` (purges queues, supersedes
+   prior batches, submits).
 4. Workers copy each input to local scratch.
-5. Workers run the configured script from `worker/tools/`.
+5. Workers run the configured script from `worker/tools/` and append a
+   per-minute progress beacon to `logs/<job_id>/progress.ndjson`.
 6. Results are copied back to `solved/`; logs are written under `logs/<job_id>/`.
 
 `worker/framework/setup.bat` shares the `worker/` folder as
@@ -116,17 +125,27 @@ raw/
 worker PCs, the framework path is normally `Z:\framework`, not
 `Z:\worker\framework`.
 
-Useful commands:
+Useful commands (all via `farm.bat`; full guide in `worker/README.md`):
 
 | Action | Command |
 | --- | --- |
-| Generate a manifest | `worker/make_manifest.bat` |
-| Submit jobs | `worker/submit.bat` |
-| Resubmit missing outputs only | `worker/resubmit.bat` |
-| Purge queued jobs | `worker/purge_queue.bat` |
-| Restart running workers | `worker/restart_all_workers.bat` |
-| Stop workers | `worker/stop_all_workers.bat` |
-| Clean local scratch data | `worker/clean_scratch.bat` |
+| Workers + queue + live job progress/stalls | `farm status` |
+| Per-PC CPU/RAM/disk/GPU/temp/uptime | `farm stats` |
+| Generate a manifest | `farm manifest raw -o manifests\batch.yaml` |
+| Submit jobs (purge + new batch first) | `farm submit manifests\batch.yaml --fresh` |
+| Resubmit missing outputs only | `farm resume manifests\batch.yaml` |
+| Retry failed/stalled jobs only | `farm retry-failed manifests\batch.yaml` |
+| View / reorder / delete waiting jobs | `farm queue` / `queue next <id>` / `queue drop <id>` |
+| Pin a job to one PC | `farm assign <id> <HOST>` |
+| Purge queued jobs | `farm purge [--force]` |
+| Restart workers (re-read config) | `farm restart [host\|all]` |
+| Stop / start boxes remotely | `farm stop <host\|all>` / `farm start <host\|all>` |
+| Full reset (queues + Redis + fleet stop) | `farm nuke --yes` |
+
+Double-clicking `farm.bat` opens a persistent numbered dashboard with the
+same operations. Install the per-box watchdog once with
+`worker\ops\install_watchdog.bat` to get heartbeats, zombie sweeping, and
+remote start.
 
 The current manifest helpers are intentionally simple and scan top-level
 `raw/*.gsz` files. For another file type, edit the extension in

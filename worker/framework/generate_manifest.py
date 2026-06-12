@@ -14,11 +14,27 @@ from config import CFG
 
 def generate(folder, output, queue, timeout, mesh_edge):
     folder = Path(folder).resolve()
-    gsz_files = sorted(folder.glob("*.gsz"))
+    # Recurse into subfolders so raw/<batch>/*.gsz is picked up. Each job
+    # carries rel_path (its path relative to the scanned root) so the worker
+    # can mirror the same subfolder structure under solved/.
+    gsz_files = sorted(folder.rglob("*.gsz"))
 
     if not gsz_files:
-        print(f"No .gsz files in {folder}")
+        print(f"No .gsz files under {folder}")
         return
+
+    jobs = []
+    for g in gsz_files:
+        rel = g.relative_to(folder)                       # e.g. batchA/foo.gsz, or foo.gsz at root
+        # subfolder-qualified id so same-named files in different folders
+        # don't collide on log dirs / task ids. Root files keep their bare
+        # stem, so existing single-folder behaviour is unchanged.
+        job_id = rel.with_suffix("").as_posix().replace("/", "__")
+        jobs.append({
+            "id": job_id,
+            "gsz_path": str(g),
+            "rel_path": rel.as_posix(),
+        })
 
     manifest = {
         "project": folder.name,
@@ -28,7 +44,7 @@ def generate(folder, output, queue, timeout, mesh_edge):
             "timeout_minutes": timeout,
             "mesh_edge": mesh_edge,
         },
-        "jobs": [{"id": g.stem, "gsz_path": str(g)} for g in gsz_files],
+        "jobs": jobs,
     }
 
     out = Path(output)

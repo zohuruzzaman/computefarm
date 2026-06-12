@@ -28,8 +28,14 @@ param(
     [string]$GszPath,
     [double]$MeshEdge = 0,
     [int]$HeartbeatSec = 15,
-    [string]$ScriptsDir = $env:GEO_SCRIPTS_DIR
+    [string]$ScriptsDir = $env:GEO_SCRIPTS_DIR,
+    # Progress watchdog: kill ONLY if the .gsz output stops growing for this many
+    # minutes (no hard total time limit). The .gsz batch-flushes steps in chunks
+    # (flat ~2 min between flushes is normal), so this must be generous. A genuine
+    # stall sits flat for hours. Override via env GEO_STALL_IDLE_MIN.
+    [int]$StallIdleMin = 30
 )
+if ($env:GEO_STALL_IDLE_MIN) { $StallIdleMin = [int]$env:GEO_STALL_IDLE_MIN }
 
 # ---------------------------------------------------------------------------
 # Locate GeoCmd.exe. Allow override via env var for non-standard install paths.
@@ -178,16 +184,32 @@ $null = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived `
 $proc.BeginOutputReadLine()
 $proc.BeginErrorReadLine()
 
-$lastLogSize = 0
-# WaitForExit($ms) returns true if the process exited within $ms, false on
-# timeout. This wakes immediately on exit instead of waiting a full heartbeat.
+$lastLogSize = -1
+$lastGszSize = -1
+$lastChange  = Get-Date
+$StallIdleSec = $StallIdleMin * 60
+# WaitForExit($ms) returns true on exit, false on timeout (wakes immediately on
+# exit). PROGRESS WATCHDOG (replaces the old hard timeout): any change in the
+# .gsz OR solver-log size counts as progress and resets the idle clock; we kill
+# ONLY if both stay flat for $StallIdleMin minutes. No hard total time limit, so
+# a genuinely-long-but-progressing solve runs to completion.
 while (-not $proc.WaitForExit($HeartbeatSec * 1000)) {
     $elapsed = ((Get-Date) - $start).TotalSeconds
-    $size = 0
-    if (Test-Path $solverLog) { $size = (Get-Item $solverLog).Length }
-    $delta = $size - $lastLogSize
-    $lastLogSize = $size
-    Write-Host ("    .. running, {0:N0}s elapsed, log {1:N0} B (+{2:N0})" -f $elapsed, $size, $delta)
+    $logsz = 0; if (Test-Path $solverLog) { $logsz = (Get-Item $solverLog).Length }
+    $gszsz = 0; if (Test-Path $GszAbs)    { $gszsz = (Get-Item $GszAbs).Length }
+    if ($gszsz -ne $lastGszSize -or $logsz -ne $lastLogSize) { $lastChange = Get-Date }
+    $lastGszSize = $gszsz; $lastLogSize = $logsz
+    $idle = ((Get-Date) - $lastChange).TotalSeconds
+    Write-Host ("    .. running, {0:N0}s, gsz {1:N0}B, idle {2:N0}/{3:N0}s" -f $elapsed, $gszsz, $idle, $StallIdleSec)
+    if ($idle -ge $StallIdleSec) {
+        Write-Host ("    STALL WATCHDOG: no .gsz/log growth for {0:N0}s (> {1} min) -> killing." -f $idle, $StallIdleMin) -ForegroundColor Yellow
+        & taskkill /F /T /PID $proc.Id 2>$null | Out-Null
+        Start-Sleep -Seconds 2
+        Unregister-Event -SourceIdentifier "GeoCmdOut.$($proc.Id)" -ErrorAction SilentlyContinue
+        Unregister-Event -SourceIdentifier "GeoCmdErr.$($proc.Id)" -ErrorAction SilentlyContinue
+        Write-Host ("Stalled (no progress) after {0:N1}s" -f $elapsed) -ForegroundColor Red
+        exit 7
+    }
 }
 Unregister-Event -SourceIdentifier "GeoCmdOut.$($proc.Id)" -ErrorAction SilentlyContinue
 Unregister-Event -SourceIdentifier "GeoCmdErr.$($proc.Id)" -ErrorAction SilentlyContinue

@@ -74,7 +74,7 @@ $GpuConcurrency = [int](Read-Value -Prompt "Celery GPU concurrency per worker" -
 $SolveScript = Read-Value -Prompt "Solver script in worker/tools" -Default $SolveScript -Required
 
 $configYaml = Join-Path $RepoRoot "worker\framework\config.yaml"
-$connectDrive = Join-Path $RepoRoot "worker\connect_drive.ps1"
+$connectDrive = Join-Path $RepoRoot "worker\ops\connect_drive.ps1"
 
 Set-Text -Path $configYaml -Transform {
     param($text)
@@ -100,5 +100,7 @@ Write-Host "Configuration complete." -ForegroundColor Cyan
 Write-Host "Next steps:"
 Write-Host "  1. Run worker\framework\setup.bat on the storage PC."
 Write-Host "  2. Choose 'y' when asked to share the worker folder."
-Write-Host "  3. On worker PCs, run \\$StoragePC\$ShareName\connect_drive.ps1."
-Write-Host "  4. Then run Z:\framework\setup_check.bat and Z:\framework\start_workers.bat."
+Write-Host "  3. On worker PCs, run \\$StoragePC\$ShareName\ops\connect_drive.ps1."
+Write-Host "  4. Then run Z:\framework\setup_check.bat and Z:\ops\install_watchdog.bat"
+Write-Host "     (the watchdog auto-starts and keeps the worker alive; manual"
+Write-Host "     alternative: Z:\framework\start_workers.bat)."

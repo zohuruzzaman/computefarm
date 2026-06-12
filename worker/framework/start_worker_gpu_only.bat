@@ -31,7 +31,15 @@ if errorlevel 1 (
 )
 set PY=py -3.12
 
+REM SINGLE-INSTANCE LOCK (gpu): celery's own --pidfile refuses duplicates
+REM and auto-removes stale pidfiles. One gpu worker per box, ever.
+for /f "delims=" %%i in ('%PY% -c "from config import CFG; import os; os.makedirs(CFG.local_scratch, exist_ok=True); print(CFG.local_scratch)"') do set SCRATCH=%%i
+set PIDFILE=%SCRATCH%\celery_gpu_%COMPUTERNAME%.pid
+
 set FORKED_BY_MULTIPROCESSING=1
+REM Role marker: tells celery_app's boot cleanup NOT to kill GeoCmd/SolveServer
+REM (a cpu worker on this same box may be mid-solve when the gpu worker boots).
+set COMPUTEFARM_ROLE=gpu
 
 for /f %%i in ('%PY% -c "from config import CFG; print(CFG.gpu_concurrency)"') do set GPU_C=%%i
 
@@ -39,10 +47,16 @@ echo ComputeFarm GPU Worker - %COMPUTERNAME% (pool=prefork, concurrency=%GPU_C%,
 echo Runtime resize: celery -A celery_app control pool_grow N --destination=%COMPUTERNAME%_gpu@%COMPUTERNAME%
 
 set SENTINEL=..\WORKERS.stop
+set HOST_SENTINEL=..\control\%COMPUTERNAME%.stop
 
 :loop
 if exist "%SENTINEL%" (
     echo Sentinel %SENTINEL% present - stopping worker permanently.
+    popd
+    exit /b 0
+)
+if exist "%HOST_SENTINEL%" (
+    echo Sentinel %HOST_SENTINEL% present - this host is stopped ^(farm start %COMPUTERNAME% to resume^).
     popd
     exit /b 0
 )
@@ -51,11 +65,21 @@ if exist "%SENTINEL%" (
     --loglevel=INFO ^
     --pool=prefork ^
     --concurrency=%GPU_C% ^
-    --queues=gpu ^
-    --hostname=%COMPUTERNAME%_gpu@%COMPUTERNAME%
+    --queues=gpu,gpu.%COMPUTERNAME%,gpu_ml ^
+    --hostname=%COMPUTERNAME%_gpu@%COMPUTERNAME% ^
+    --pidfile="%PIDFILE%"
 
+set RC=%ERRORLEVEL%
+if "%RC%"=="73" (
+    echo.
+    echo A gpu worker is ALREADY RUNNING on %COMPUTERNAME% - duplicate refused
+    echo ^(pidfile lock^). Closing this window in 10s.
+    timeout /t 10 /nobreak >NUL
+    popd
+    exit /b 0
+)
 echo.
-echo GPU worker exited at %DATE% %TIME% with code %ERRORLEVEL%.
+echo GPU worker exited at %DATE% %TIME% with code %RC%.
 echo Restarting in 3s... (Ctrl+C to abort, or touch %SENTINEL% to stay down)
 timeout /t 3 /nobreak >NUL
 goto loop

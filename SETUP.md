@@ -8,7 +8,7 @@ as [GEOSTUDIO.md](GEOSTUDIO.md).
 
 ```text
 worker/
-|-- connect_drive.ps1
+|-- ops/connect_drive.ps1
 |-- submit.bat
 |-- resubmit.bat
 |-- purge_queue.bat
@@ -58,7 +58,7 @@ concurrency, and the selected script from `worker/tools/`.
 On each Windows worker:
 
 ```powershell
-\\STORAGE-PC\ComputeFarm\connect_drive.ps1
+\\STORAGE-PC\ComputeFarm\ops\connect_drive.ps1
 Z:
 cd Z:\framework
 .\setup.bat

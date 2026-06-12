@@ -59,8 +59,19 @@ if errorlevel 1 (
 )
 set PY=py -3.12
 
+REM ---------------------------------------------------------------------------
+REM SINGLE-INSTANCE LOCK: celery's own --pidfile (set below) refuses to start
+REM a duplicate worker ("Pidfile already exists... already running?") and
+REM auto-removes a stale pidfile from a crashed worker. Duplicate workers
+REM (each pulling jobs) caused the 2026-06-11 oversubscription mess - N
+REM workers reporting as one node, 4x the intended load. One per box, ever.
+REM ---------------------------------------------------------------------------
+for /f "delims=" %%i in ('%PY% -c "from config import CFG; import os; os.makedirs(CFG.local_scratch, exist_ok=True); print(CFG.local_scratch)"') do set SCRATCH=%%i
+set PIDFILE=%SCRATCH%\celery_cpu_%COMPUTERNAME%.pid
+
 REM Mandatory on Windows for the prefork pool to spawn children at all.
 set FORKED_BY_MULTIPROCESSING=1
+set COMPUTEFARM_ROLE=cpu
 
 for /f %%i in ('%PY% -c "from config import CFG; print(CFG.cpu_concurrency)"') do set CPU_C=%%i
 
@@ -85,7 +96,10 @@ REM      whose cmd window has closed).
 REM Sentinel path is now relative to the cwd (which pushd set to framework/),
 REM avoiding the malformed `\\HOST\share\path\..\WORKERS.stop` string.
 REM ---------------------------------------------------------------------------
+REM Global sentinel stops the whole fleet; per-host sentinel stops just this
+REM box (created/removed by `farm stop <host>` / `farm start <host>`).
 set SENTINEL=..\WORKERS.stop
+set HOST_SENTINEL=..\control\%COMPUTERNAME%.stop
 
 :loop
 if exist "%SENTINEL%" (
@@ -93,16 +107,43 @@ if exist "%SENTINEL%" (
     popd
     exit /b 0
 )
+if exist "%HOST_SENTINEL%" (
+    echo Sentinel %HOST_SENTINEL% present - this host is stopped ^(farm start %COMPUTERNAME% to resume^).
+    popd
+    exit /b 0
+)
 
+REM Zombie sweep: at this point NO worker runs on this box (single-instance
+REM lock + we are between launches), so ANY GeoCmd/SolveServer is an orphan
+REM from a killed solve. Kill them before they starve the next solve.
+taskkill /F /IM GeoCmd.exe >NUL 2>&1
+taskkill /F /IM SolveServer.exe >NUL 2>&1
+
+REM Personal queue cpu.%COMPUTERNAME% lets `farm assign <job> <host>` route a
+REM job to THIS box specifically; it drains alongside the shared cpu queue.
 %PY% -m celery -A celery_app worker ^
     --loglevel=INFO ^
     --pool=prefork ^
     --concurrency=%CPU_C% ^
-    --queues=cpu,default ^
-    --hostname=%COMPUTERNAME%_cpu@%COMPUTERNAME%
+    --queues=cpu,cpu.%COMPUTERNAME%,default ^
+    --hostname=%COMPUTERNAME%_cpu@%COMPUTERNAME% ^
+    --pidfile="%PIDFILE%"
 
+set RC=%ERRORLEVEL%
+REM Exit code 73 = celery's "Pidfile already exists - already running?".
+REM That's the single-instance protection REFUSING a duplicate, not a crash.
+REM Do NOT loop on it (looping = restart storm every 3s); just close.
+if "%RC%"=="73" (
+    echo.
+    echo A cpu worker is ALREADY RUNNING on %COMPUTERNAME% - this launch was a
+    echo duplicate and was refused ^(pidfile lock^). That worker is fine; check
+    echo `farm status`. Closing this window in 10s.
+    timeout /t 10 /nobreak >NUL
+    popd
+    exit /b 0
+)
 echo.
-echo Worker exited at %DATE% %TIME% with code %ERRORLEVEL%.
+echo Worker exited at %DATE% %TIME% with code %RC%.
 echo Restarting in 3s... (Ctrl+C to abort, or touch %SENTINEL% to stay down)
 timeout /t 3 /nobreak >NUL
 goto loop
