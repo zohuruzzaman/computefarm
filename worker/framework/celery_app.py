@@ -32,6 +32,11 @@ app.conf.update(
     worker_prefetch_multiplier=1,
     broker_connection_retry_on_startup=True,
     result_expires=CFG.result_expires,
+    # acks_late + Redis transport: an unacked message is force-requeued after
+    # visibility_timeout (default 3600s). Solves run for many hours, so the
+    # default re-delivers jobs that are still mid-solve, spawning duplicate
+    # attempts. Must exceed the longest expected solve (~10h cap in config).
+    broker_transport_options={"visibility_timeout": 12 * 3600},
 )
 
 

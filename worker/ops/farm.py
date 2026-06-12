@@ -131,6 +131,30 @@ def _set_batch(batch_id: str):
     BATCH_FILE.write_text(batch_id + "\n", encoding="utf-8")
 
 
+def _unacked_jobs(r) -> dict:
+    """Jobs currently checked out by workers (Redis unacked hash).
+    Returns {job_id: checked_out_age_minutes}. This is broker truth and
+    works even when busy workers don't answer celery inspect."""
+    out = {}
+    try:
+        idx = dict(r.zrange("unacked_index", 0, -1, withscores=True))
+        now = time.time()
+        for tag, raw in r.hgetall("unacked").items():
+            try:
+                payload = json.loads(raw)
+                job, _, _ = _decode_msg(json.dumps(payload[0]).encode())
+                jid = (job or {}).get("id")
+                if not jid:
+                    continue
+                ts = idx.get(tag)
+                out[str(jid)] = (now - ts) / 60.0 if ts else 0.0
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
 def _beacon_last(job_id: str) -> dict | None:
     """Newest line of logs/<job>/progress.ndjson, or None."""
     p = CFG.logs_dir / job_id / "progress.ndjson"
@@ -175,53 +199,52 @@ def cmd_status(args):
             print(f"  {qk:24s} {n}")
     print(f"  {'TOTAL waiting':24s} {total}")
 
-    print("\n--- workers ---")
+    print("\n--- workers (inspect; busy boxes may not reply in time) ---")
     try:
         i = _app().control.inspect(timeout=6)
         stats = i.stats() or {}
         active = i.active() or {}
         reserved = i.reserved() or {}
+        if not stats:
+            print("  no replies (workers busy or down - job truth is below)")
+        for w in sorted(stats):
+            conc = stats[w].get("pool", {}).get("max-concurrency", "?")
+            upt = _hms(stats[w].get("uptime", 0))
+            n_act = len(active.get(w, []))
+            n_res = len(reserved.get(w, []))
+            print(f"  {w:42s} conc={conc} active={n_act} reserved={n_res} up={upt}")
     except Exception as e:
         print(f"  (inspect failed: {e})")
-        return
-    if not stats:
-        print("  none online")
-    for w in sorted(stats):
-        conc = stats[w].get("pool", {}).get("max-concurrency", "?")
-        upt = _hms(stats[w].get("uptime", 0))
-        n_act = len(active.get(w, []))
-        n_res = len(reserved.get(w, []))
-        print(f"  {w:42s} conc={conc} active={n_act} reserved={n_res} up={upt}")
 
-    print("\n--- in-flight jobs (live beacon) ---")
+    # In-flight truth comes from the broker, not worker replies: every
+    # checked-out (unacked) message is a job some worker holds right now.
+    print("\n--- in-flight jobs (Redis unacked + beacon) ---")
     any_job = False
-    for w, tasks_ in sorted((active or {}).items()):
-        for t in tasks_:
-            any_job = True
-            job = (t.get("args") or [{}])[0]
-            jid = str(job.get("id", "?"))
-            b = _beacon_last(jid)
-            host = w.split("@")[-1]
-            if b is None:
-                print(f"  {jid:44s} {host:16s} (no beacon yet)")
-                continue
-            if "final" in b:
-                print(f"  {jid:44s} {host:16s} finishing ({b['final']})")
-                continue
-            idle = b.get("idle_s", 0)
-            flag = ""
-            if idle >= STALL_KILL_S:
-                flag = "  [STALLED - watchdog firing]"
-            elif idle >= STALL_WARN_S:
-                flag = f"  [WARN idle {_hms(idle)}]"
-            sizes = b.get("sizes", {})
-            gsz = next((v for k, v in sizes.items() if k.endswith(".gsz")), None)
-            gsz_s = f" gsz={gsz/1e6:.1f}MB" if gsz else ""
-            print(f"  {jid:44s} {host:16s} run {_hms(b.get('elapsed_s'))}"
-                  f"{gsz_s} idle {_hms(idle)}{flag}")
-            last = b.get("last_line", "")
-            if last:
-                print(f"    {'':44s} > {last[:110]}")
+    for jid, age_min in sorted(_unacked_jobs(r).items(), key=lambda kv: -kv[1]):
+        any_job = True
+        b = _beacon_last(jid)
+        if b is None:
+            flag = "  [no beacon - reserved but not started?]" if age_min > 10 else ""
+            print(f"  {jid:44s} checked-out {age_min:5.0f}m  (no beacon){flag}")
+            continue
+        host = b.get("hostname") or "?"
+        if "final" in b:
+            print(f"  {jid:44s} {host:16s} finishing ({b['final']})")
+            continue
+        idle = b.get("idle_s", 0)
+        flag = ""
+        if idle >= STALL_KILL_S:
+            flag = "  [STALLED - watchdog firing]"
+        elif idle >= STALL_WARN_S:
+            flag = f"  [WARN idle {_hms(idle)}]"
+        sizes = b.get("sizes", {})
+        gsz = next((v for k, v in sizes.items() if k.endswith(".gsz")), None)
+        gsz_s = f" gsz={gsz/1e6:.1f}MB" if gsz else ""
+        print(f"  {jid:44s} {host:16s} run {_hms(b.get('elapsed_s'))}"
+              f"{gsz_s} idle {_hms(idle)}{flag}")
+        last = b.get("last_line", "")
+        if last:
+            print(f"    {'':44s} > {last[:110]}")
     if not any_job:
         print("  none")
 
